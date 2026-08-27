@@ -2,9 +2,11 @@ import { useState, useEffect, useRef } from 'react'
 import { useRive, useStateMachineInput, Layout, Fit, Alignment } from '@rive-app/react-webgl2'
 import dogRiv from './assets/health-dog.riv'
 
-// Verified byte-for-byte in the .riv — Delivery #3. Mood States (Gentle
-// Concern, Sleep, Sad) are now Booleans with ENTER → LOOP → RETURN
-// animation, not one-shot triggers. 10 inputs total: 3 booleans + 7 triggers.
+// Verified byte-for-byte in the .riv — Delivery #4. Mood States (Gentle
+// Concern, Sleep, Sad) are Booleans with ENTER → LOOP → RETURN animation,
+// not one-shot triggers. Sleep now drives its own dedicated blink
+// (trg_sleepy_blink) instead of the normal/slow blink triggers.
+// 11 inputs total: 3 booleans + 8 triggers.
 const STATE_MACHINE = 'Dog Controller'
 
 const MOOD_STATES = [
@@ -24,6 +26,7 @@ const IDLE_VARIATIONS = [
 const BLINK = [
   { name: 'trg_blink', label: 'Blink', icon: 'eye' },
   { name: 'trg_slow_blink', label: 'Slow Blink', icon: 'eyeHalf' },
+  { name: 'trg_sleepy_blink', label: 'Sleepy Blink', icon: 'moon' },
 ]
 
 export default function App() {
@@ -55,18 +58,27 @@ export default function App() {
   const trg_idle_c = useStateMachineInput(rive, STATE_MACHINE, 'trg_idle_c')
   const trg_blink = useStateMachineInput(rive, STATE_MACHINE, 'trg_blink')
   const trg_slow_blink = useStateMachineInput(rive, STATE_MACHINE, 'trg_slow_blink')
+  const trg_sleepy_blink = useStateMachineInput(rive, STATE_MACHINE, 'trg_sleepy_blink')
 
   const triggers = {
     trg_happy, trg_celebrate, trg_onboarding,
-    trg_idle_b, trg_idle_c, trg_blink, trg_slow_blink,
+    trg_idle_b, trg_idle_c, trg_blink, trg_slow_blink, trg_sleepy_blink,
   }
   const moodInputs = { isGentleConcern, isSleep, isSad }
   const [moodState, setMoodState] = useState({ isGentleConcern: false, isSleep: false, isSad: false })
 
+  // Kept in sync with moodState.isSleep so the auto-blink scheduler (which
+  // runs in a setTimeout closure) always reads the *current* sleep status
+  // instead of a stale one from when the effect first ran.
+  const isSleepRef = useRef(false)
+  useEffect(() => {
+    isSleepRef.current = moodState.isSleep
+  }, [moodState.isSleep])
+
   const fire = (name, label, icon) => {
     triggers[name]?.fire()
     setLastFired({ label, icon })
-    if (name === 'trg_blink' || name === 'trg_slow_blink') {
+    if (name === 'trg_blink' || name === 'trg_slow_blink' || name === 'trg_sleepy_blink') {
       setBlinkFeed((f) => ({ count: f.count + 1, lastAt: Date.now() }))
     }
   }
@@ -87,24 +99,28 @@ export default function App() {
   }, [rive])
 
   // Auto Blink — client's Animation Brief: "randomized blinks (3–6s)".
-  // Suppressed while asleep (Sleepy / any state containing "Sleep").
+  // While isSleep is true, the scheduler fires trg_sleepy_blink instead of
+  // trg_blink — sleep gets its own dedicated blink, never the normal or
+  // slow blink. trg_slow_blink stays available as a manual/app-fired
+  // trigger (e.g. for Concern/Sad) and is not part of this auto schedule.
   const blinkTimeout = useRef(null)
   useEffect(() => {
     if (!trg_blink) return
     const schedule = () => {
       const delay = 3000 + Math.random() * 3000
       blinkTimeout.current = setTimeout(() => {
-        const asleep = currentStateRef.current.includes('Sleep')
-        if (!asleep) {
+        if (isSleepRef.current) {
+          trg_sleepy_blink?.fire()
+        } else {
           trg_blink.fire()
-          setBlinkFeed((f) => ({ count: f.count + 1, lastAt: Date.now() }))
         }
+        setBlinkFeed((f) => ({ count: f.count + 1, lastAt: Date.now() }))
         schedule()
       }, delay)
     }
     schedule()
     return () => clearTimeout(blinkTimeout.current)
-  }, [trg_blink])
+  }, [trg_blink, trg_sleepy_blink])
 
   return (
     <>
@@ -187,11 +203,11 @@ export default function App() {
             <p>
               Health Dog runs on a single Rive <b>State Machine</b> — named{' '}
               <code>Dog Controller</code>. The rig lives entirely in one
-              sitting pose. As of Delivery #3, the 3 mood states (Gentle
-              Concern, Sleep, Sad) are <b>Booleans</b> your app turns on and
-              off — everything else (Happy, Celebrate, Onboarding, the idle
-              variations, and both blinks) is still a one-shot{' '}
-              <b>Trigger</b>. 10 inputs total.
+              sitting pose. The 3 mood states (Gentle Concern, Sleep, Sad)
+              are <b>Booleans</b> your app turns on and off. Everything else
+              — Happy, Celebrate, Onboarding, the idle variations, and the
+              three blink variants (normal, slow, sleepy) — is a one-shot{' '}
+              <b>Trigger</b>. 11 inputs total.
             </p>
             <div className="badge-row">
               <span className="badge">JavaScript</span>
@@ -219,32 +235,30 @@ export default function App() {
               </div>
             </div>
             <p style={{ marginTop: 16 }}>
-              As of Delivery #3, Gentle Concern, Sleep, and Sad are{' '}
-              <b>Booleans</b>, not triggers — the app sets the condition{' '}
-              <code>true</code>, the dog plays an ENTER transition into a
-              looping state, and stays there until the app sets it back to{' '}
-              <code>false</code>, which plays a RETURN transition back to
-              Idle. The animation never exits on its own.
+              Gentle Concern, Sleep, and Sad are <b>Booleans</b>, not
+              triggers — the app sets the condition <code>true</code>, the
+              dog plays an ENTER transition into a looping state, and stays
+              there until the app sets it back to <code>false</code>, which
+              plays a RETURN transition back to Idle. The animation never
+              exits on its own.
             </p>
           </DocSection>
 
-          <DocSection id="polish" eyebrow="Latest Delivery" title="Happy animation reworked">
+          <DocSection id="polish" eyebrow="Latest Delivery" title="Dedicated Sleepy Blink">
             <div className="update-grid">
               <div className="update-card added">
                 <div className="update-card-title">In this delivery</div>
                 <ul>
-                  <li>Removed head size scaling entirely — no more grow/shrink pulsing.</li>
-                  <li>Head now moves in a smooth up/down bounce (5 bounces per loop) instead of side to side.</li>
-                  <li>Ears now have a subtle floppy side-to-side reaction that follows the head bounce, kept light so the head stays the main movement.</li>
-                  <li>Tongue movement is clearly visible to show the excitement.</li>
-                  <li>Added darker shading above the tongue / below the top of the mouth when it's fully open, so the open mouth reads clearly.</li>
+                  <li>Added a new trigger, <code>trg_sleepy_blink</code> — a heavier, slower blink built specifically for the Sleep state.</li>
+                  <li>The auto-blink scheduler now checks <code>isSleep</code>: while true, it fires <code>trg_sleepy_blink</code> on the usual 3–6s randomized interval instead of the normal blink.</li>
+                  <li><code>trg_blink</code> and <code>trg_slow_blink</code> are unchanged and unaffected outside of Sleep — <code>trg_slow_blink</code> remains a manual/app-fired trigger (e.g. for Concern/Sad), not part of the auto schedule.</li>
                 </ul>
               </div>
               <div className="update-card unchanged">
-                <div className="update-card-title">Confirmed before delivery</div>
+                <div className="update-card-title">Confirmed unchanged</div>
                 <ul>
-                  <li>Full preview done with everything together (head + ears + tongue) — the loop is seamless.</li>
-                  <li>No trigger or state machine names changed — same 10 inputs, same <code>Dog Controller</code>.</li>
+                  <li>No other trigger or state machine names changed — same <code>Dog Controller</code>.</li>
+                  <li>All other animations (Happy, Celebrate, Onboarding, idle variations, mood states) behave exactly as before.</li>
                 </ul>
               </div>
             </div>
@@ -278,14 +292,14 @@ export default function App() {
             </p>
           </DocSection>
 
-          <DocSection id="inputs" eyebrow="Inputs" title="All 10 inputs, grouped as in the editor">
+          <DocSection id="inputs" eyebrow="Inputs" title="All 11 inputs, grouped as in the editor">
             <div className="group-block">
               <div className="group-block-title" style={{ '--gc': 'var(--terracotta)' }}>
                 Mood States <span className="gbt-kind">Boolean</span>
               </div>
               <div className="inputs-grid">
                 <InputCard icon="heart" name="isGentleConcern" desc="Set true when the app detects the user is struggling (frequent cravings, logged pouches). Set false when the condition clears." />
-                <InputCard icon="moon" name="isSleep" desc="Set true for low companion health / nighttime. Set false when the condition clears." />
+                <InputCard icon="moon" name="isSleep" desc="Set true for low companion health / nighttime. Set false when the condition clears. Also drives which blink variant the auto-scheduler fires — see Blink below." />
                 <InputCard icon="droplet" name="isSad" desc="Set true on a setback/relapse event. Set false when the condition clears." />
               </div>
               <p style={{ marginTop: 14, marginBottom: 0 }}>
@@ -318,8 +332,9 @@ export default function App() {
                 Blink <span className="gbt-kind">Trigger</span>
               </div>
               <div className="inputs-grid">
-                <InputCard icon="eye" name="trg_blink" desc="Standard blink — runs on its own parallel layer, independent of the main state." />
-                <InputCard icon="eyeHalf" name="trg_slow_blink" desc="Slower, heavier blink — used more often during Sleep/Concern/Sad." />
+                <InputCard icon="eye" name="trg_blink" desc="Standard blink — auto-fired on a random 3–6s interval whenever isSleep is false." />
+                <InputCard icon="eyeHalf" name="trg_slow_blink" desc="Slower, heavier blink — manual/app-fired only (e.g. during Concern or Sad), not part of the auto schedule." />
+                <InputCard icon="moon" name="trg_sleepy_blink" desc="Dedicated sleep blink — auto-fired on the same random 3–6s interval, but only while isSleep is true, replacing trg_blink for that period." />
               </div>
             </div>
           </DocSection>
@@ -335,8 +350,11 @@ export default function App() {
           <DocSection id="auto-blink" eyebrow="Automatic Blink" title="The one explicit timing requirement">
             <p>
               The Animation Brief specifies exactly one random-timing rule:{' '}
-              <i>"randomized blinks (3–6s)."</i> Everything else is a
-              judgment call, not a client spec.
+              <i>"randomized blinks (3–6s)."</i> That interval now drives
+              two different triggers depending on <code>isSleep</code>:{' '}
+              <code>trg_blink</code> normally, <code>trg_sleepy_blink</code>{' '}
+              while asleep. Everything else is a judgment call, not a
+              client spec.
             </p>
             <LiveFeed
               label="Live on the canvas above"
@@ -356,6 +374,7 @@ export default function App() {
               <li>Mood States are Booleans, not pulses — your app must set them back to false when the condition ends, or the dog stays in that mood forever.</li>
               <li>Don't set two Mood States true at once — the rig assumes only one is active at a time.</li>
               <li>Emotions ride on top of Idle — they don't replace the base pose, so don't treat them as separate "screens."</li>
+              <li>Don't call <code>trg_blink</code> manually while <code>isSleep</code> is true — let the scheduler's <code>trg_sleepy_blink</code> branch handle it, or the two blink styles can visually clash.</li>
             </ul>
           </DocSection>
 
@@ -365,7 +384,8 @@ export default function App() {
               <li>Load <code>Dog Controller</code> (name unchanged)</li>
               <li>Wire the 3 Mood State booleans to their app conditions — and set them back to false</li>
               <li>Wire the 3 Main Triggers (Happy, Celebrate, Onboarding) to their app events</li>
-              <li>Schedule <code>trg_blink</code> on a random 3–6s interval</li>
+              <li>Schedule <code>trg_blink</code> on a random 3–6s interval, switching to <code>trg_sleepy_blink</code> whenever <code>isSleep</code> is true</li>
+              <li>Keep <code>trg_slow_blink</code> available for manual/app-fired use (e.g. Concern/Sad) — do not auto-schedule it</li>
               <li>Remove any old code that fired <code>trg_concern</code> / <code>trg_sleepy</code> / <code>trg_sad</code> — those triggers no longer exist</li>
               <li>Done</li>
             </ul>
@@ -537,13 +557,18 @@ export function HealthDog() {
   )
 }`
 
-const AUTO_BLINK = `function scheduleBlink(trg_blink, getCurrentState) {
+const AUTO_BLINK = `function scheduleBlink(inputs, isSleepRef) {
+  const { trg_blink, trg_sleepy_blink } = inputs
   const next = 3000 + Math.random() * 3000 // 3–6s, per the Animation Brief
   setTimeout(() => {
-    const asleep = getCurrentState().includes('Sleep')
-    if (!asleep) trg_blink?.fire()
-    scheduleBlink(trg_blink, getCurrentState)
+    if (isSleepRef.current) {
+      trg_sleepy_blink?.fire()
+    } else {
+      trg_blink?.fire()
+    }
+    scheduleBlink(inputs, isSleepRef)
   }, next)
 }
 
-scheduleBlink(trg_blink, getCurrentState)`
+// isSleepRef.current should mirror your isSleep boolean input's value
+scheduleBlink({ trg_blink, trg_sleepy_blink }, isSleepRef)`
